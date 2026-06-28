@@ -21,4 +21,3 @@ require (
 )
 
 // GitHub 仓库创建前使用本地路径
-replace github.com/banshanhanfu/agentmail => ../agentmail
