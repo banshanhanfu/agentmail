@@ -64,7 +64,7 @@ func Send(ctx context.Context, from string, to []string, rawEmail []byte, signKe
 				res.Error = err.Error()
 				continue
 			}
-			addr2 := fmt.Sprintf("%s:25", addrs[0])
+			addr2 := fmt.Sprintf("%s:465", addrs[0])
 			client, err = dialSMTP(ctx, addr2, from, domain)
 			if err != nil {
 				log.Printf("[smtp] fallback dial %s failed: %v", addr2, err)
@@ -105,7 +105,7 @@ func groupByDomain(recipients []string) map[string][]string {
 	return groups
 }
 
-// lookupMX 查询域名的 MX 记录，返回 MX host:25
+// lookupMX 查询域名的 MX 记录，返回 MX host:465（SMTPS/SSL）
 func lookupMX(ctx context.Context, domain string) (string, error) {
 	resolver := &net.Resolver{}
 	mxs, err := resolver.LookupMX(ctx, domain)
@@ -117,18 +117,26 @@ func lookupMX(ctx context.Context, domain string) (string, error) {
 	}
 	// 使用优先级最高的 MX
 	host := strings.TrimSuffix(mxs[0].Host, ".")
-	return fmt.Sprintf("%s:25", host), nil
+	return fmt.Sprintf("%s:465", host), nil
 }
 
-// dialSMTP 连接到 SMTP 服务器，尝试 STARTTLS
+// dialSMTP 通过 SSL/TLS 连接到 SMTP 服务器（端口 465，SMTPS）
+// 与端口的 STARTTLS 不同，465 端口在连接建立时直接进行 TLS 握手。
 func dialSMTP(ctx context.Context, addr, from, domain string) (*smtp.Client, error) {
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	tlsConfig := &tls.Config{
+		ServerName:         extractHost(addr),
+		InsecureSkipVerify: false,
+	}
+	dialer := &tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: 10 * time.Second},
+		Config:    tlsConfig,
+	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", addr, err)
+		return nil, fmt.Errorf("tls dial %s: %w", addr, err)
 	}
 
-	client, err := smtp.NewClient(conn, addr)
+	client, err := smtp.NewClient(conn, extractHost(addr))
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("smtp client: %w", err)
@@ -138,17 +146,6 @@ func dialSMTP(ctx context.Context, addr, from, domain string) (*smtp.Client, err
 	if err := client.Hello(getHostname()); err != nil {
 		client.Close()
 		return nil, fmt.Errorf("helo: %w", err)
-	}
-
-	// STARTTLS
-	if ok, _ := client.Extension("STARTTLS"); ok {
-		tlsConfig := &tls.Config{
-			ServerName:         extractHost(addr),
-			InsecureSkipVerify: false,
-		}
-		if err := client.StartTLS(tlsConfig); err != nil {
-			log.Printf("[smtp] STARTTLS failed (non-fatal): %v", err)
-		}
 	}
 
 	return client, nil

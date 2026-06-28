@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/banshanhanfu/agentmail"
 )
@@ -339,6 +340,7 @@ func decodeBody(data []byte, encoding string) string {
 }
 
 // decodeRFC2047 decodes RFC 2047 encoded words like =?UTF-8?B?...?= or =?UTF-8?Q?...?=.
+// Falls back to charset detection for non-RFC2047 raw bytes.
 func decodeRFC2047(s string) string {
 	if s == "" {
 		return ""
@@ -349,7 +351,16 @@ func decodeRFC2047(s string) string {
 	decoded, err := dec.DecodeHeader(s)
 	if err != nil {
 		// Fall back to regex-based decoding
-		return rfc2047DecodeFallback(s)
+		decoded = rfc2047DecodeFallback(s)
+	}
+
+	// If still has non-UTF-8 sequences, try GBK/GB2312 conversion
+	if !utf8.ValidString(decoded) {
+		if converted := tryDecodeNonUTF8(decoded); converted != "" {
+			return converted
+		}
+		// Last resort: replace invalid sequences
+		return strings.ToValidUTF8(decoded, "�")
 	}
 	return decoded
 }
