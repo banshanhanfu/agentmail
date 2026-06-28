@@ -224,30 +224,116 @@ firewall-cmd --permanent --add-port=8081/tcp
 firewall-cmd --reload
 ```
 
-### DNS 配置
+### DNS 反垃圾配置
 
-确保域名有正确的 MX 记录指向服务器 IP：
+发出去的信不被扔进垃圾箱、别人发的信不被冒名伪造，靠三条 DNS 记录。**不管是哪台 Agent 部署 AgentMail，这三条缺一不可。**
 
-```
-wsai.chat.  IN  MX  10  mail.wsai.chat.
-mail.wsai.chat.  IN  A   116.204.132.105
-```
+#### 1. MX — 告诉全世界：@你的域名 的邮件送到哪台服务器
 
-### DKIM
-
-```go
-// 用 Go 生成 DKIM 密钥对
-import "github.com/banshanhanfu/agentmail/internal/dkim"
-
-pub, priv, _ := dkim.GenerateKeyPair()
-// 把 pub 加到 DNS TXT 记录
-// 把 priv 存到 Identity.SignKey
+```dns
+yourdomain.com.  IN  MX  10  mail.yourdomain.com.
+mail.yourdomain.com.  IN  A    你的服务器IP
 ```
 
-DNS TXT 记录：
+> `MX 10` 的 10 是优先级，越小越优先。只有一个邮件服务器时填 10 即可。
+
+#### 2. SPF — 声明：只有我的服务器能代发 @你的域名 的邮件
+
+防止别人用你的域名发垃圾邮件。
+
+```dns
+yourdomain.com.  IN  TXT  "v=spf1 ip4:你的服务器IP include:mail.yourdomain.com ~all"
 ```
-agentmail._domainkey.wsai.chat.  IN  TXT  "v=DKIM1; k=ed25519; p=..."
+
+参数说明：
+- `ip4:你的服务器IP` — 允许你这台服务器发信
+- `include:mail.yourdomain.com` — 允许 mail.yourdomain.com 发信
+- `~all` — 软拒绝（其他服务器发的标记为可疑，但不直接拒收）
+- `-all` — 硬拒绝（更严格，建议等 SPF 稳定后再改）
+
+#### 3. DKIM — 数字签名：证明这封邮件确实是你发的
+
+**第一步：生成密钥对**
+
+```bash
+# 方法一：用 Go 生成
+go run -mod=mod << 'GOEOF'
+package main
+
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
+	"fmt"
+	"os"
+)
+
+func main() {
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	privBytes, _ := x509.MarshalPKCS8PrivateKey(priv)
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
+	os.WriteFile("dkim_private.pem", privPEM, 0600)
+
+	pubBytes, _ := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubBytes})
+
+	pubB64 := base64.StdEncoding.EncodeToString(pubBytes)
+	fmt.Println("=== DNS TXT Record ===")
+	fmt.Printf("Name:  agentmail._domainkey.yourdomain.com\n")
+	fmt.Printf("TTL:   3600\n")
+	fmt.Printf("Type:  TXT\n")
+	fmt.Printf("Value: v=DKIM1; k=rsa; p=%s\n", pubB64)
+	fmt.Println("========================")
+	fmt.Println("Private key saved to: dkim_private.pem")
+}
+GOEOF
 ```
+
+**第二步：把公钥加到 DNS**
+
+```dns
+agentmail._domainkey.yourdomain.com.  IN  TXT  "v=DKIM1; k=rsa; p=上一步输出的长字符串..."
+```
+
+**第三步：把私钥装到 AgentMail 身份上**
+
+```bash
+# 读私钥
+PRIV=$(cat dkim_private.pem)
+
+# 更新身份
+curl -X PUT http://localhost:8081/v1/identities/kefu@yourdomain.com \
+  -H "Authorization: Bearer *** \
+  -d "{\"sign_key\":\"$PRIV\"}"
+```
+
+> 注意：`agentmail._domainkey` 中的 `agentmail` 是选择器（selector），可以改成任意名字（如 `default`、`mail`），关键是 AgentMail 的签名代码里要匹配。默认选择器是 `agentmail`。
+
+#### 4. DMARC — 告诉收件方：如果 SPF/DKIM 校验失败怎么处理
+
+```dns
+_dmarc.yourdomain.com.  IN  TXT  "v=DMARC1; p=quarantine; rua=mailto:kefu@yourdomain.com"
+```
+
+参数说明：
+- `p=quarantine` — 校验失败的邮件标记为垃圾（推荐）
+- `p=reject` — 校验失败的邮件直接拒收（严格，适合稳定运营后启用）
+- `p=none` — 只报告不处理（先设为 none 观察一段时间）
+- `rua=mailto:...` — 收件方把检测报告发到这个邮箱
+
+#### 验证全部生效
+
+```bash
+# 查询权威 DNS 验证
+dig MX yourdomain.com +short
+dig TXT yourdomain.com +short | grep spf
+dig TXT agentmail._domainkey.yourdomain.com +short
+dig TXT _dmarc.yourdomain.com +short
+```
+
+用在线工具检测邮件评分：https://www.mail-tester.com/
 
 ## 开发
 
