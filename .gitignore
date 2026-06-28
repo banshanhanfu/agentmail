@@ -1,0 +1,17 @@
+# 忽略编译产物
+agentmail
+agentmail-*
+*.exe
+
+# 忽略数据目录
+/data/
+data/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 依赖缓存
+vendor/

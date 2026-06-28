@@ -1,0 +1,17 @@
+# AgentMail 配置文件
+# 用法: agentmail -config config.yaml
+
+# SMTP 收信监听地址（收外部邮件用）
+smtp_listen: ":25"
+
+# HTTP API 监听地址（给 Agent 调 REST API）
+http_listen: ":8081"
+
+# 数据目录（SQLite 数据库 + 附件存储）
+data_dir: "/data/agentmail"
+
+# 默认域名（创建身份时的默认 domain）
+domain: "wsai.chat"
+
+# 日志级别: debug / info / warn / error
+log_level: "info"
